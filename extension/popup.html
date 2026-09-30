@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <h1><img src="icons/icon48.png" alt=""> Stream Autopilot</h1>
+  <div class="subtitle">Keeps your streams running smooth, in the background.</div>
+
+  <section id="status-section">
+    <h2>Status</h2>
+    <div class="row">
+      <span>Autopilot</span>
+      <span id="armed-pill" class="pill off">OFF</span>
+    </div>
+    <div class="row"><span class="muted">This site</span><span id="current-host" class="muted">—</span></div>
+    <div class="row"><span class="muted">Stream detected</span><span id="stream-detected">—</span></div>
+    <div class="row"><span class="muted">Rebuffers (2 min)</span><span id="rebuffers">—</span></div>
+    <div class="row"><span class="muted">Dropped frames</span><span id="dropped">—</span></div>
+    <div id="struggle-box" class="notice" style="display:none">
+      This stream keeps buffering. A fresh reload often clears it up.
+      <div style="margin-top:6px"><button id="reload-btn" class="primary">Reload stream</button></div>
+    </div>
+    <div class="row">
+      <button id="toggle-btn" class="primary">Turn ON for this site</button>
+    </div>
+    <div id="not-configured" class="empty" style="display:none">
+      Health reporting is off — connect your API in Settings below and it'll start quietly reporting.
+    </div>
+  </section>
+
+  <section>
+    <h2>Favorites</h2>
+    <div id="fav-list"><div class="empty">No favorites yet.</div></div>
+    <div class="row"><button id="add-fav-btn">Add this site</button></div>
+    <div class="honest">Click a favorite to open it in a new tab — autopilot is already armed when it loads (if auto-start is on).</div>
+  </section>
+
+  <section>
+    <h2>Fastest edges</h2>
+    <div class="row">
+      <label class="inline" style="margin:0">Region
+        <select id="edge-region" style="width:auto">
+          <option value="us">us</option>
+          <option value="eu">eu</option>
+          <option value="asia">asia</option>
+        </select>
+      </label>
+      <button id="edge-refresh">Refresh</button>
+    </div>
+    <div id="edge-list"><div class="empty">Connect your API to see edge rankings.</div></div>
+    <div class="honest">These are the fastest known servers for your region. Heads-up: only sites that let you pick a server can actually be switched — everywhere else this is a health readout, not a steering wheel.</div>
+  </section>
+
+  <section>
+    <h2>API settings</h2>
+    <label>API base URL
+      <input type="text" id="set-url" placeholder="https://your-api.example.com">
+    </label>
+    <label>API key
+      <input type="password" id="set-key" placeholder="paste your key">
+    </label>
+    <label>Region
+      <input type="text" id="set-region" placeholder="us">
+    </label>
+    <label class="inline"><input type="checkbox" id="set-autodetect"> Auto-start when a stream is detected</label>
+    <label>Health report every (minutes)
+      <input type="number" id="set-minutes" min="1" max="60" value="5">
+    </label>
+    <div class="row">
+      <button id="save-btn" class="primary">Save</button>
+      <button id="test-btn">Test connection</button>
+    </div>
+    <div id="test-result" class="muted"></div>
+  </section>
+
+  <footer>
+    Designed and created by EPoBuilds Studio &amp; Jarvis<br>
+    <a id="contact-link" href="mailto:epobuilds@gmail.com">epobuilds@gmail.com</a>
+  </footer>
+
+<script src="popup.js"></script>
+</body>
+</html>
