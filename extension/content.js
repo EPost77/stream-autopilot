@@ -118,12 +118,98 @@
     if (now - autoSettingsAt < 30000) return;
     autoSettingsAt = now;
     try {
-      const s = await chrome.storage.local.get({ autoRecover: true, armedOverrides: {} });
+      const s = await chrome.storage.local.get({ autoRecover: true, armedOverrides: {}, showHud: true });
       cachedAuto = {
         autoRecover: s.autoRecover !== false,
         disabledHosts: s.armedOverrides || {},
+        showHud: s.showHud !== false,
       };
     } catch (_) { /* keep last known */ }
+  }
+
+  // --- On-page status HUD: a tiny pill so the user can SEE the autopilot ---
+  // Idle = small green dot ("watching"). While it acts, the pill expands with
+  // a plain-language note of what it's doing. Dismissible via × (per page
+  // load); fully toggleable from the popup ("Show on-page status").
+  let hudEl = null, hudDot = null, hudText = null, hudMode = "", hudDismissed = false;
+  function ensureHud() {
+    if (hudEl || !document.body) return;
+    if (!document.getElementById("sap-hud-style")) {
+      const st = document.createElement("style");
+      st.id = "sap-hud-style";
+      st.textContent = "@keyframes sapPulse{0%,100%{transform:scale(1);opacity:1}" +
+        "50%{transform:scale(1.45);opacity:0.55}}";
+      document.head.appendChild(st);
+    }
+    hudEl = document.createElement("div");
+    hudEl.setAttribute("data-autopilot-hud", "1");
+    hudEl.style.cssText = "position:fixed;left:16px;bottom:16px;z-index:2147483647;" +
+      "display:flex;align-items:center;gap:8px;max-width:70vw;" +
+      "background:rgba(10,14,26,0.92);color:#e6ebf5;border:1px solid #2a3552;" +
+      "border-radius:999px;padding:7px 10px;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;" +
+      "font-size:12.5px;line-height:1.3;box-shadow:0 4px 18px rgba(0,0,0,0.45);" +
+      "pointer-events:auto;user-select:none;cursor:default;";
+    hudDot = document.createElement("span");
+    hudDot.style.cssText = "flex:none;width:10px;height:10px;border-radius:50%;background:#34d399;opacity:0.9;";
+    hudText = document.createElement("span");
+    hudText.style.cssText = "display:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+    const x = document.createElement("span");
+    x.textContent = "×";
+    x.title = "Hide status (this page load)";
+    x.style.cssText = "display:none;flex:none;cursor:pointer;color:#8b93a7;font-size:15px;" +
+      "line-height:1;padding:0 2px;";
+    x.addEventListener("click", (e) => {
+      e.stopPropagation();
+      hudDismissed = true;
+      if (hudEl) hudEl.remove();
+      hudEl = null; hudMode = "";
+    });
+    hudEl.appendChild(hudDot);
+    hudEl.appendChild(hudText);
+    hudEl.appendChild(x);
+    hudEl._x = x;
+    document.body.appendChild(hudEl);
+  }
+  function updateHud() {
+    if (hudDismissed || cachedAuto.showHud === false) {
+      if (hudEl) { hudEl.remove(); hudEl = null; hudMode = ""; }
+      return;
+    }
+    let action = "", anyWatched = false;
+    for (const [video, state] of videos) {
+      if (!video.isConnected) continue;
+      if (state.everPlayed) anyWatched = true;
+      if (state.autoAction) { action = state.autoAction; break; }
+    }
+    if (!anyWatched) {
+      if (hudEl) { hudEl.remove(); hudEl = null; hudMode = ""; }
+      return;
+    }
+    ensureHud();
+    if (!hudEl) return;
+    hudEl.style.display = "flex";
+    const mode = action ? "active" : "idle";
+    if (mode !== hudMode) {
+      hudMode = mode;
+      if (mode === "idle") {
+        hudEl.title = "Stream Autopilot is watching this stream";
+        hudDot.style.background = "#34d399";
+        hudDot.style.animation = "none";
+        hudDot.style.opacity = "0.55";
+        hudText.style.display = "none";
+        hudEl._x.style.display = "none";
+        hudEl.style.padding = "7px 7px";
+      } else {
+        hudEl.title = "Stream Autopilot";
+        hudDot.style.background = "#fbbf24";
+        hudDot.style.opacity = "1";
+        hudDot.style.animation = "sapPulse 1.1s ease-in-out infinite";
+        hudText.style.display = "inline";
+        hudEl._x.style.display = "inline";
+        hudEl.style.padding = "7px 10px";
+      }
+    }
+    if (action && hudText.textContent !== action) hudText.textContent = action;
   }
 
   function notifyAuto(video, state, action, text) {
@@ -337,6 +423,7 @@
       state.stallPredicted = playing && state.everPlayed && ahead < 2 && lastThr < curBrMbps * 0.9;
       autoRecover(video, state, now);
     }
+    updateHud();
   }
 
   function currentSrc(video) {

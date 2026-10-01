@@ -508,6 +508,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           region: (s.region || "us").trim().toLowerCase(),
           autoDetect: s.autoDetect !== false,
           autoRecover: s.autoRecover !== false,
+          showHud: s.showHud !== false,
           reportMinutes: Math.max(1, Number(s.reportMinutes) || DEFAULT_REPORT_MINUTES),
         });
         await ensureHealthAlarm();

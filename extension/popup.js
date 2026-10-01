@@ -154,6 +154,7 @@ async function renderSettings() {
   document.getElementById("set-region").value = s.region || "us";
   document.getElementById("set-autodetect").checked = s.autoDetect !== false;
   document.getElementById("set-autorecover").checked = s.autoRecover !== false;
+  document.getElementById("set-showhud").checked = s.showHud !== false;
   document.getElementById("set-minutes").value = s.reportMinutes || 5;
   document.getElementById("edge-region").value = s.region || "us";
 }
@@ -167,6 +168,7 @@ async function saveSettings() {
       region: document.getElementById("set-region").value,
       autoDetect: document.getElementById("set-autodetect").checked,
       autoRecover: document.getElementById("set-autorecover").checked,
+      showHud: document.getElementById("set-showhud").checked,
       reportMinutes: document.getElementById("set-minutes").value,
     },
   });
