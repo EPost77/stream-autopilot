@@ -173,6 +173,7 @@
     BASE + "position:fixed;right:14px;bottom:14px;width:248px;z-index:2147483647;" +
     "background:#121826;border:1px solid #1f2940;border-radius:14px;color:#e6ebf5;" +
     "box-shadow:0 8px 30px rgba(0,0,0,.5);font-size:12px;overflow:hidden;");
+  panel.id = PANEL_ID;
 
   var dotColors = { on: "#34d399", off: "#69748a" };
   var dot = el("span",
