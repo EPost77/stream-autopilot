@@ -45,6 +45,9 @@ async function renderStatus() {
   document.getElementById("stream-detected").textContent = s.streamingDetected ? "Yes" : "No";
   document.getElementById("rebuffers").textContent = String(s.rebuffers || 0);
   document.getElementById("dropped").textContent = String(s.droppedFrames || 0);
+  const recentAction = s.lastAutoAction && s.lastAutoActionAt &&
+    (Date.now() - s.lastAutoActionAt < 120000) ? s.lastAutoAction : "—";
+  document.getElementById("auto-action").textContent = recentAction;
 
   const pill = document.getElementById("armed-pill");
   pill.textContent = s.armed ? "ON" : "OFF";
@@ -150,6 +153,7 @@ async function renderSettings() {
   document.getElementById("set-key").value = s.apiKey || "";
   document.getElementById("set-region").value = s.region || "us";
   document.getElementById("set-autodetect").checked = s.autoDetect !== false;
+  document.getElementById("set-autorecover").checked = s.autoRecover !== false;
   document.getElementById("set-minutes").value = s.reportMinutes || 5;
   document.getElementById("edge-region").value = s.region || "us";
 }
@@ -162,6 +166,7 @@ async function saveSettings() {
       apiKey: document.getElementById("set-key").value,
       region: document.getElementById("set-region").value,
       autoDetect: document.getElementById("set-autodetect").checked,
+      autoRecover: document.getElementById("set-autorecover").checked,
       reportMinutes: document.getElementById("set-minutes").value,
     },
   });

@@ -1,9 +1,11 @@
 /* Stream Autopilot — one-click bookmarklet injector.
  *
  * Drag to your bookmarks bar, then click it on any streaming tab.
- * No install, no store, no signup. Self-contained: passive measurement
- * only (reads video.buffered / currentTime), floating HUD, zero chrome.*
- * APIs so it runs anywhere a bookmarklet runs.
+ * No install, no store, no signup. Self-contained: measures the video
+ * passively (reads video.buffered / currentTime) and actively prevents
+ * stalls — easing speed to rebuild buffer, pausing briefly to let a
+ * starving buffer catch up, reloading a truly dead stream. Floating HUD,
+ * zero chrome.* APIs so it runs anywhere a bookmarklet runs.
  *
  * Designed and created by EPoBuilds Studio & Jarvis — epobuilds@gmail.com
  */
@@ -92,9 +94,41 @@
     var state = {
       rebufferTimes: [], everPlayed: false, bufferedAhead: 0,
       thrSamples: [], ewma: null, lastBufSample: null, stallPredicted: false,
+      autoAction: "",
+      auto: {
+        lastT: 0, lastProgressAt: Date.now(), watchedAt: Date.now(),
+        speedCut: false, autoPaused: false, pauseStartedAt: 0,
+        pauseFails: 0, noPauseUntil: 0,
+        userPaused: false, userTookOver: false,
+        reloads: [], stickyNote: "",
+      },
     };
     videos.set(video, state);
-    video.addEventListener("playing", function () { state.everPlayed = true; });
+    video.addEventListener("playing", function () {
+      state.everPlayed = true;
+      state.auto.userPaused = false;
+      state.auto.stickyNote = "";
+      state.auto.lastProgressAt = Date.now();
+    });
+    video.addEventListener("play", function () {
+      state.auto.userPaused = false;
+      state.auto.stickyNote = "";
+    });
+    video.addEventListener("pause", function () {
+      if (state.auto.autoPaused && !state.auto.userPaused) {
+        // our own recovery pause — not the user
+      } else {
+        state.auto.userPaused = true;
+        state.auto.autoPaused = false; // never auto-resume a user's own pause
+        state.auto.stickyNote = "";
+      }
+    });
+    video.addEventListener("seeking", function () {
+      if (state.auto.autoPaused) {
+        state.auto.autoPaused = false;
+        state.auto.userTookOver = true;
+      }
+    });
     video.addEventListener("waiting", function () {
       if (!video.paused && !video.ended) {
         state.rebufferTimes.push(Date.now());
@@ -139,7 +173,19 @@
       state.bufferedAhead = ahead;
       if (prev && playing) {
         var dt = (now - prev.t) / 1000;
-        if (dt > 0.3 && dt < 5) {
+        var bufferFull = isFinite(video.duration) && ahead >= video.duration - ct - 0.5;
+        // A seek (or loop wrap) moves the playhead discontinuously: the
+        // buffer-ahead math then reads ~0 downloaded, which also looks like
+        // a dead network. Skip sampling across discontinuities.
+        var expectedAdvance = dt * (video.playbackRate || 1);
+        var seekJump = Math.abs((ct - prev.ct) - expectedAdvance) > 2;
+        // A throughput sample is only meaningful while the browser is
+        // actively downloading. Before the fetch starts, after it finishes,
+        // or while the browser is satisfied with its buffer, downloaded/sec
+        // reads ~0 — a false "dead network" that then freezes, because
+        // later ticks keep skipping while the buffer looks full.
+        var netDownloading = video.networkState === video.NETWORK_LOADING;
+        if (dt > 0.3 && dt < 5 && !bufferFull && !seekJump && netDownloading) {
           var br = bitrateBps(video.videoWidth, video.videoHeight);
           var downloadedVideoSec = (ahead - prev.ahead) + (ct - prev.ct);
           if (br > 0 && downloadedVideoSec > -1) {
@@ -157,6 +203,151 @@
       var curBrMbps = bitrateBps(video.videoWidth, video.videoHeight) / 1e6;
       state.stallPredicted = playing && state.everPlayed && ahead < 2 && lastThr < curBrMbps * 0.9;
     });
+  }
+
+  /* ---------- automatic stall prevention ---------- */
+  /* Same three escalating interventions as the extension: ease speed,
+     pause to rebuild, reload a dead stream. Never fights the user. */
+
+  var AUTO = {
+    SPEED_RATE: 0.92,
+    SPEED_ENGAGE_AHEAD: 3,
+    SPEED_RELEASE_AHEAD: 6,
+    PAUSE_AHEAD: 1.2,
+    PAUSE_RESUME_AHEAD: 4,
+    PAUSE_TIMEOUT_MS: 15000,
+    STALL_CONFIRM_MS: 6000,
+    RELOAD_COOLDOWN_MS: 20000,
+    RELOAD_WINDOW_MS: 300000,
+    RELOAD_MAX_PER_WINDOW: 2,
+    MIN_WATCH_MS: 30000,
+  };
+
+  function currentSrc(video) {
+    var src = video.currentSrc || video.src || "";
+    if (!src) {
+      var s = video.querySelector("source[src]");
+      return s ? s.getAttribute("src") : "";
+    }
+    return src;
+  }
+
+  function reloadVideoElement(video) {
+    var src = currentSrc(video);
+    if (!src || /^blob:/i.test(src)) return false;
+    try {
+      var t = video.currentTime || 0;
+      video.src = src;
+      video.load();
+      var restore = function () {
+        try {
+          if (isFinite(t) && t > 0 && t < (video.duration || Infinity)) {
+            video.currentTime = Math.max(0, t - 0.5);
+          }
+        } catch (_) {}
+        try { var p = video.play(); if (p && p.catch) p.catch(function () {}); } catch (_) {}
+      };
+      if (video.readyState >= 1) restore();
+      else video.addEventListener("loadedmetadata", restore, { once: true });
+      return true;
+    } catch (_) { return false; }
+  }
+
+  function autoRecover(video, state, now) {
+    var a = state.auto;
+    var ct = video.currentTime || 0;
+    if (ct > a.lastT + 0.01) { a.lastT = ct; a.lastProgressAt = now; }
+    if (!video.isConnected) return;
+
+    var playing = !video.paused && !video.ended && video.readyState >= 2;
+    var ahead = state.bufferedAhead || 0;
+    var br = bitrateBps(video.videoWidth, video.videoHeight) / 1e6;
+    var lastThr = state.thrSamples.length ? state.thrSamples[state.thrSamples.length - 1] : null;
+    var draining = lastThr != null && br > 0 && lastThr < br * 0.85;
+    var live = !isFinite(video.duration);
+    var wantsToPlay = state.everPlayed && !video.paused && !video.ended;
+    var dur = video.duration;
+    var speedRelease = isFinite(dur) ? Math.min(AUTO.SPEED_RELEASE_AHEAD, dur * 0.75) : AUTO.SPEED_RELEASE_AHEAD;
+    var pauseResume = isFinite(dur) ? Math.min(AUTO.PAUSE_RESUME_AHEAD, dur * 0.7) : AUTO.PAUSE_RESUME_AHEAD;
+    // Within a few seconds of the natural end there is no buffer left to
+    // rebuild — slowing down or pausing there only delays the finish.
+    // Scaled to the clip: a fixed 8s guard would permanently disable short
+    // videos, so the tail zone is the last 20% (capped at 8s).
+    var nearEnd = isFinite(dur) && dur - ct > 0 && dur - ct < Math.min(8, dur * 0.2);
+
+    if (a.speedCut) {
+      if (ahead >= speedRelease || !playing) {
+        try {
+          if (Math.abs(video.playbackRate - AUTO.SPEED_RATE) < 0.02) video.playbackRate = 1;
+        } catch (_) {}
+        a.speedCut = false;
+      }
+    } else if (
+      !nearEnd &&
+      playing && state.everPlayed && !a.userPaused &&
+      Math.abs(video.playbackRate - 1) < 0.01 &&
+      ahead < AUTO.SPEED_ENGAGE_AHEAD && ahead > AUTO.PAUSE_AHEAD && draining
+    ) {
+      try { video.playbackRate = AUTO.SPEED_RATE; a.speedCut = true; } catch (_) {}
+    }
+
+    if (a.autoPaused) {
+      var rebuilt = ahead >= pauseResume;
+      if (rebuilt ||
+          now - a.pauseStartedAt > AUTO.PAUSE_TIMEOUT_MS ||
+          a.userTookOver) {
+        a.autoPaused = false;
+        var tookOver = a.userTookOver;
+        a.userTookOver = false;
+        if (rebuilt) {
+          a.pauseFails = 0;
+        } else if (!tookOver) {
+          // buffer didn't rebuild — back off so we don't thrash
+          a.pauseFails += 1;
+          a.noPauseUntil = now + Math.min(120000, 15000 * a.pauseFails);
+        }
+        if (!a.userPaused && !tookOver) {
+          try {
+            var p = video.play();
+            if (p && p.then) {
+              p.then(function () {}, function () { a.stickyNote = "Tap play to resume"; });
+            }
+          } catch (_) {}
+        }
+      }
+    } else if (
+      !live && !nearEnd && playing && state.everPlayed && !a.userPaused &&
+      now >= a.noPauseUntil &&
+      ahead <= AUTO.PAUSE_AHEAD && (draining || state.stallPredicted)
+    ) {
+      // Mark BEFORE pausing: the pause event can fire synchronously, and the
+      // handler must see this as our pause, not the user's.
+      try { a.autoPaused = true; a.pauseStartedAt = now; video.pause(); } catch (_) {}
+    }
+
+    var stalled = wantsToPlay &&
+      (now - a.lastProgressAt > AUTO.STALL_CONFIRM_MS) &&
+      video.readyState < 3;
+    if (stalled) {
+      var recent = a.reloads.filter(function (t) { return now - t < AUTO.RELOAD_WINDOW_MS; });
+      a.reloads = recent;
+      var ageOk = now - a.watchedAt > AUTO.MIN_WATCH_MS;
+      var gapOk = recent.length === 0 || now - recent[recent.length - 1] > AUTO.RELOAD_COOLDOWN_MS;
+      if (recent.length < AUTO.RELOAD_MAX_PER_WINDOW && ageOk && gapOk) {
+        if (reloadVideoElement(video)) {
+          a.reloads.push(now);
+          a.lastProgressAt = now;
+          a.stickyNote = "";
+        }
+      } else if (recent.length >= AUTO.RELOAD_MAX_PER_WINDOW) {
+        a.stickyNote = "Still stuck — reload the page";
+      }
+    }
+
+    if (a.autoPaused) state.autoAction = "⏸ Paused — rebuilding buffer…";
+    else if (a.speedCut) state.autoAction = "⚡ Eased to 92% — rebuilding buffer…";
+    else if (a.stickyNote) state.autoAction = a.stickyNote;
+    else state.autoAction = "";
   }
 
   /* ---------- floating HUD ---------- */
@@ -284,7 +475,9 @@
     rbEl.innerHTML = "Rebuffers: <b style='color:#e6ebf5'>" + rb + "</b>";
     dfEl.innerHTML = "Dropped: <b style='color:#e6ebf5'>" + getDroppedFrames(v) + "</b>";
     var struggling = rb >= REBUFFER_HARD_LIMIT;
-    if (st.stallPredicted) {
+    if (st.autoAction) {
+      statusEl.innerHTML = "<span style='color:#22d3ee'>" + st.autoAction + "</span>";
+    } else if (st.stallPredicted) {
       statusEl.innerHTML = "<span style='color:#fbbf24'>▲ Stall risk — buffer almost gone</span>";
     } else if (struggling) {
       statusEl.innerHTML = "<span style='color:#ef4444'>● Stream struggling — reload may help</span>";
@@ -311,6 +504,12 @@
   if (observer && document.documentElement) {
     observer.observe(document.documentElement, { childList: true, subtree: true });
   }
-  setInterval(function () { if (running) { sampleBuffers(); render(); } }, 1000);
+  setInterval(function () {
+    if (!running) return;
+    sampleBuffers();
+    var now = Date.now();
+    videos.forEach(function (state, video) { autoRecover(video, state, now); });
+    render();
+  }, 1000);
   render();
 })();

@@ -10,8 +10,10 @@
 // Honest limits (also stated in the UI): true "server hopping" only works on
 // sites that expose selectable stream edges/servers. On generic sites the
 // extension monitors stream health, reports it to your API, shows the fastest
-// known edge for your region, and offers a one-click stream reload when
-// buffering won't quit. It cannot force YouTube/Twitch onto another CDN.
+// known edge for your region, and automatically fights buffering — easing
+// playback speed to rebuild buffer, pausing briefly to let a starving buffer
+// catch up, and reloading a truly dead stream. It cannot force YouTube/Twitch
+// onto another CDN, and it can't create bandwidth that isn't there.
 
 "use strict";
 
@@ -41,6 +43,9 @@ function freshTabState() {
     qualityTier: "",
     switches: 0,          // detected quality-tier changes
     stallsPrevented: 0,   // predicted stalls that never materialized
+    interventions: 0,     // automatic recovery actions taken (pause/speed/reload)
+    lastAutoAction: "",   // human-readable latest intervention
+    lastAutoActionAt: 0,
     predictedAt: 0,       // when the current stall prediction started
     updatedAt: Date.now(),
   };
@@ -67,6 +72,7 @@ async function getSettings() {
     apiKey: "",
     region: "us",
     autoDetect: true,
+    autoRecover: true,
     reportMinutes: DEFAULT_REPORT_MINUTES,
   });
   s.apiBaseUrl = (s.apiBaseUrl || "").replace(/\/+$/, ""); // no trailing slash
@@ -238,6 +244,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (tier && tier !== prevTier) {
       state.switches += 1;
       await logEvent("info", `Quality change on ${host}: <b>${prevTier || "unknown"} → ${tier}</b>.`);
+      // Quality help: the player dropped a tier even though the measured
+      // connection looks fast enough for the higher one. Often temporary —
+      // say so honestly instead of pretending we can force it back.
+      if (prevTier && tierRank(tier) < tierRank(prevTier)) {
+        const need = tierBitrateMbps(prevTier);
+        const have = state.estimatedMbps;
+        if (need > 0 && have != null && have > need * 1.2) {
+          await logEvent("info", `<b>Quality note</b> on ${host}: dropped to ${tier} but your connection looks fast enough for ${prevTier} — the player will usually bounce back on its own.`);
+        }
+      }
     }
     state.qualityTier = tier;
     await persistTelemetry();
@@ -368,6 +384,14 @@ function qualityLabel(w, h) {
   return "";
 }
 
+function tierRank(tier) {
+  return { "2160p": 5, "1440p": 4, "1080p": 3, "720p": 2, "480p": 1 }[tier] || 0;
+}
+
+function tierBitrateMbps(tier) {
+  return { "2160p": 25, "1440p": 12, "1080p": 6, "720p": 3, "480p": 1.5 }[tier] || 0;
+}
+
 // Ring buffer of human-readable governor events (cap 50), newest last.
 async function logEvent(kind, html) {
   try {
@@ -388,6 +412,7 @@ async function persistTelemetry() {
     const totalRebuffers = streaming.reduce((a, s) => a + (s.rebuffers || 0), 0);
     const totalPrevented = [...tabState.values()].reduce((a, s) => a + (s.stallsPrevented || 0), 0);
     const totalSwitches = [...tabState.values()].reduce((a, s) => a + (s.switches || 0), 0);
+    const totalInterventions = [...tabState.values()].reduce((a, s) => a + (s.interventions || 0), 0);
     await chrome.storage.local.set({
       autopilotTelemetry: {
         updatedAt: Date.now(),
@@ -402,6 +427,7 @@ async function persistTelemetry() {
           rebuffers: totalRebuffers,
           stallsPrevented: totalPrevented,
           switches: totalSwitches,
+          interventions: totalInterventions,
         },
         tabs: streaming.map((s) => ({
           host: hostnameOf(s.pageUrl),
@@ -423,6 +449,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   (async () => {
     switch (msg.type) {
+      case "autopilot-auto-action": {
+        // The content script took an automatic recovery action on the video.
+        const tabId = sender.tab && sender.tab.id;
+        if (tabId != null) {
+          const st = getTabState(tabId);
+          st.interventions = (st.interventions || 0) + 1;
+          st.lastAutoAction = String(msg.text || msg.action || "");
+          st.lastAutoActionAt = Date.now();
+          const h = esc(hostnameOf(st.pageUrl) || "this site");
+          await logEvent("good", `<b>Autopilot</b> on ${h}: ${esc(msg.text || msg.action || "took action")}`);
+          await persistTelemetry();
+          updateBadge(tabId);
+        }
+        sendResponse({ ok: true });
+        break;
+      }
       case "autopilot-get-tab-state": {
         const state = getTabState(tabId);
         const settings = await getSettings();
@@ -465,6 +507,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           apiKey: (s.apiKey || "").trim(),
           region: (s.region || "us").trim().toLowerCase(),
           autoDetect: s.autoDetect !== false,
+          autoRecover: s.autoRecover !== false,
           reportMinutes: Math.max(1, Number(s.reportMinutes) || DEFAULT_REPORT_MINUTES),
         });
         await ensureHealthAlarm();

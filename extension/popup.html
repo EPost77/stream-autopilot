@@ -18,6 +18,7 @@
     <div class="row"><span class="muted">Stream detected</span><span id="stream-detected">—</span></div>
     <div class="row"><span class="muted">Rebuffers (2 min)</span><span id="rebuffers">—</span></div>
     <div class="row"><span class="muted">Dropped frames</span><span id="dropped">—</span></div>
+    <div class="row"><span class="muted">Autopilot action</span><span id="auto-action">—</span></div>
     <div id="struggle-box" class="notice" style="display:none">
       This stream keeps buffering. A fresh reload often clears it up.
       <div style="margin-top:6px"><button id="reload-btn" class="primary">Reload stream</button></div>
@@ -65,6 +66,7 @@
       <input type="text" id="set-region" placeholder="us">
     </label>
     <label class="inline"><input type="checkbox" id="set-autodetect"> Auto-start when a stream is detected</label>
+    <label class="inline"><input type="checkbox" id="set-autorecover"> Automatically prevent buffering (smart pause, slow-down, reload)</label>
     <label>Health report every (minutes)
       <input type="number" id="set-minutes" min="1" max="60" value="5">
     </label>
